@@ -1,0 +1,67 @@
+# Probely Security Scan - Remote App in Non-Blocking Mode
+# This pipeline triggers a security scan on a remote application (already running on your server)
+# The scan runs in non-blocking mode, allowing the pipeline to continue without waiting for results
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Configure these variables in Azure DevOps Pipeline Variables
+  # TARGET_ID: Your Probely target ID
+
+stages:
+- stage: SecurityScan
+  displayName: 'Security Scan'
+  jobs:
+  - job: ProbelyScan
+    displayName: 'Trigger Probely Security Scan'
+    steps:
+    
+    # Step 1: Install Probely CLI
+    - task: Bash@3
+      displayName: 'Install Probely CLI'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Install Probely CLI
+          pip install probely
+          # Test probely GET TARGETS
+          probely targets get --api-key $(PROBELY_API_KEY)
+      env:
+        PROBELY_API_KEY: $(PROBELY_API_KEY)
+    
+    # Step 2: Start Security Scan (Non-blocking)
+    - task: Bash@3
+      displayName: 'Start Probely Scan'
+      inputs:
+        targetType: 'inline'
+        script: |
+          for i in {1..20}; do
+            echo "-----------------------------------"
+            SCAN_ID=$(probely targets start-scan $(TARGET_ID) -o IDS_ONLY --api-key $(PROBELY_API_KEY))
+            echo ${SCAN_ID}
+            if [ -f ${SCAN_ID} ]; then
+              echo "Scan didn't start... Retry start-scan"
+            else
+              echo "Scan started with SCAN ID: ${SCAN_ID}";
+              echo "##vso[task.setvariable variable=SCAN_ID]${SCAN_ID}"
+              break;
+            fi
+            sleep 5
+          done
+          if [ -f ${SCAN_ID} ]; then
+            echo "No Scan ID, aborting..."
+            exit 1
+          fi
+          
+          echo "Security scan initiated successfully. Scan ID: ${SCAN_ID}"
+          echo "The scan is running in the background. Check Probely dashboard for results."
+      env:
+        PROBELY_API_KEY: $(PROBELY_API_KEY)
+        TARGET_ID: $(TARGET_ID)

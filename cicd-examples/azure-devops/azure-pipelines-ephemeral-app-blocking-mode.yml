@@ -1,0 +1,242 @@
+# Probely Security Scan - Ephemeral App in Blocking Mode
+# This pipeline builds and scans a containerized application within the CI/CD environment
+# The scan runs in blocking mode, waiting for completion before proceeding
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Configure these variables in Azure DevOps Pipeline Variables
+  # TARGET_ID: Your Probely target ID
+  # TARGET_HOSTNAME: Internal hostname (e.g., custom-web-app)
+  # TARGET_URL: Full target URL (e.g., http://custom-web-app:8080)
+
+stages:
+- stage: BuildAndScan
+  displayName: 'Build and Security Scan'
+  jobs:
+  - job: SecurityScan
+    displayName: 'Run Probely Security Scan'
+    steps:
+    
+    # Step 1: Checkout code
+    - checkout: self
+      displayName: 'Checkout Repository'
+    
+    # Step 2: Create custom Docker network
+    - task: Bash@3
+      displayName: 'Create custom Docker network'
+      inputs:
+        targetType: 'inline'
+        script: |
+          docker network create custom-network
+    
+    # Step 3: Build and run the Docker app container
+    - task: Bash@3
+      displayName: 'Build and run app container'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Build the Docker image
+          docker build -t test-app .
+          
+          # Run the Docker container with a custom hostname
+          docker run --name test-app \
+            --hostname custom-web-app \
+            --network custom-network \
+            -p 8080:8080 \
+            -d test-app
+    
+    # Step 4: Add container IP to /etc/hosts
+    - task: Bash@3
+      displayName: 'Configure container hostname'
+      inputs:
+        targetType: 'inline'
+        script: |
+          CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' test-app)
+          echo "Container IP is $CONTAINER_IP"
+          
+          # Add the custom hostname to the /etc/hosts file
+          echo "$CONTAINER_IP $(TARGET_HOSTNAME) $(TARGET_HOSTNAME)." | sudo tee -a /etc/hosts
+          cat /etc/hosts
+    
+    # Step 5: Wait for the app to start
+    - task: Bash@3
+      displayName: 'Wait for app to start'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Wait until the container is ready
+          for i in {1..10}; do
+            if curl -s $(TARGET_URL) > /dev/null; then
+              echo "App is up!";
+              break;
+            fi
+            echo "Waiting for the app to be ready...";
+            sleep 2;
+          done
+    
+    # Step 6: Test application with curl
+    - task: Bash@3
+      displayName: 'Test application'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Make a request to the web app using the custom hostname
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" $(TARGET_URL))
+          
+          if [ "$RESPONSE" -ne 200 ]; then
+            echo "App test failed with HTTP status $RESPONSE";
+            exit 1;
+          fi
+          
+          curl -s -i $(TARGET_URL)
+          echo "App test passed with HTTP status $RESPONSE";
+    
+    # Step 7: Start Probely Scanning Agent
+    - task: Bash@3
+      displayName: 'Start Probely Scanning Agent'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Using docker agent
+          docker run -d --name probely-agent \
+            --cap-add NET_ADMIN \
+            --network custom-network \
+            -e FARCASTER_AGENT_TOKEN=$(AGENT_TOKEN) \
+            --device /dev/net/tun probely/farcaster-onprem-agent:v2
+      env:
+        AGENT_TOKEN: $(AGENT_TOKEN)
+    
+    # Step 8: Wait for agent to start
+    - task: Bash@3
+      displayName: 'Wait for agent to start'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Wait until the probely-agent is ready
+          for i in {1..10}; do
+            echo "-----------------------------------"
+            AGENT_RUNNING=$(docker logs probely-agent | grep 'Running...' | wc -l)
+            if [ $AGENT_RUNNING == "1" ]; then
+              echo "Agent is running!";
+              echo "------------------------"
+              docker logs probely-agent
+              echo "------------------------"
+              sleep 10
+              break;
+            fi
+            sleep 2;
+          done
+    
+    # Step 9: Install Probely CLI
+    - task: Bash@3
+      displayName: 'Install Probely CLI'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Install Probely CLI
+          pip install probely
+          # Test probely GET TARGETS
+          probely targets get --api-key $(PROBELY_API_KEY)
+      env:
+        PROBELY_API_KEY: $(PROBELY_API_KEY)
+    
+    # Step 10: Start Security Scan
+    - task: Bash@3
+      displayName: 'Start Probely Scan'
+      inputs:
+        targetType: 'inline'
+        script: |
+          for i in {1..20}; do
+            echo "-----------------------------------"
+            SCAN_ID=$(probely targets start-scan $(TARGET_ID) -o IDS_ONLY --api-key $(PROBELY_API_KEY))
+            echo ${SCAN_ID}
+            if [ -f ${SCAN_ID} ]; then
+              echo "Scan didn't start... Retry start-scan"
+            else
+              echo "Scan started with SCAN ID: ${SCAN_ID}";
+              echo "##vso[task.setvariable variable=SCAN_ID]${SCAN_ID}"
+              break;
+            fi
+            sleep 5
+          done
+          if [ -f ${SCAN_ID} ]; then
+            echo "No Scan ID, aborting..."
+            docker stop test-app
+            docker stop probely-agent
+            docker rm test-app
+            docker rm probely-agent
+            docker network rm custom-network
+            exit 1
+          fi
+      env:
+        PROBELY_API_KEY: $(PROBELY_API_KEY)
+        TARGET_ID: $(TARGET_ID)
+    
+    # Step 11: Wait for scan to complete
+    - task: Bash@3
+      displayName: 'Wait for scan to complete'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Wait until scan ends
+          while true; do
+            echo "-----------------------------------"
+            SCAN_OUTPUT=$(probely scans get ${SCAN_ID} --api-key $(PROBELY_API_KEY) | tail -1)
+            echo ${SCAN_OUTPUT}
+            echo "-----------------------------------"
+            SCAN_STATUS=$(probely scans get ${SCAN_ID} --api-key $(PROBELY_API_KEY) -o JSON | jq -r '.[0].status')
+            if [ $SCAN_STATUS == "started" ] || [ $SCAN_STATUS == "queued" ]; then
+              echo "Scan is running or queued!";
+            else
+              echo "Scan is not running... finishing"
+              break;
+            fi
+            sleep 30;
+          done
+      env:
+        PROBELY_API_KEY: $(PROBELY_API_KEY)
+        SCAN_ID: $(SCAN_ID)
+    
+    # Step 12: Check for high vulnerabilities
+    - task: Bash@3
+      displayName: 'Check for high vulnerabilities'
+      inputs:
+        targetType: 'inline'
+        script: |
+          HIGH_VULNS=$(probely scans get ${SCAN_ID} --api-key $(PROBELY_API_KEY) -o JSON | jq -r '.[0].highs')
+          echo "HIGH vulnerabilities: ${HIGH_VULNS}"
+          if [ ${HIGH_VULNS} -gt 0 ]; then
+            echo "Scan has High vulnerabilities... aborting"
+            docker stop test-app
+            docker stop probely-agent
+            docker rm test-app
+            docker rm probely-agent
+            docker network rm custom-network
+            exit 1
+          else
+            echo "Scan doesn't have high vulnerabilities"
+          fi
+      env:
+        PROBELY_API_KEY: $(PROBELY_API_KEY)
+        SCAN_ID: $(SCAN_ID)
+    
+    # Step 13: Clean up Docker resources
+    - task: Bash@3
+      displayName: 'Clean up Docker resources'
+      condition: always()
+      inputs:
+        targetType: 'inline'
+        script: |
+          docker stop test-app || true
+          docker stop probely-agent || true
+          docker rm test-app || true
+          docker rm probely-agent || true
+          docker network rm custom-network || true
