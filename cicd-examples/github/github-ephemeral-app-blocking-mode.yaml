@@ -154,7 +154,7 @@ jobs:
             SCAN_OUTPUT=$(probely scans get ${SCAN_ID} --api-key ${{ secrets.PROBELY_API_KEY }} | tail -1)
             echo ${SCAN_OUTPUT}
             echo "-----------------------------------"
-            SCAN_STATUS=$(probely scans get ${SCAN_ID} --api-key ${{ secrets.PROBELY_API_KEY }} -o JSON | jq -r '.[0].status')
+            SCAN_STATUS=$(probely scans get ${SCAN_ID} --api-key ${{ secrets.PROBELY_API_KEY }} -o JSON | jq -r '.status')
             if [ $SCAN_STATUS == "started" ] || [ $SCAN_STATUS == "queued" ]; then
               echo "Scan is running or queued!";
             else
@@ -167,7 +167,7 @@ jobs:
       # Step 13: check high vulnerabities
       - name: Check for high vulnerabilities
         run: |
-          HIGH_VULNS=$(probely scans get ${SCAN_ID} --api-key ${{ secrets.PROBELY_API_KEY }} -o JSON | jq -r '.[0].highs')
+          HIGH_VULNS=$(probely scans get ${SCAN_ID} --api-key ${{ secrets.PROBELY_API_KEY }} -o JSON | jq -r '.highs')
           echo "HIGH vulnerabilities: ${HIGH_VULNS}"
           if [ $HIGH_VULNS -gt 0 ]; then
             echo "Scan has High vulnerabilities... aborting"
