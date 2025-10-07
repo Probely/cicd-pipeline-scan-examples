@@ -40,7 +40,7 @@ pipelines:
                 SCAN_OUTPUT=$(probely scans get ${SCAN_ID} --api-key $PROBELY_API_KEY | tail -1)
                 echo ${SCAN_OUTPUT}
                 echo "-----------------------------------"
-                SCAN_STATUS=$(probely scans get ${SCAN_ID} --api-key $PROBELY_API_KEY -o JSON | jq -r '.[0].status')
+                SCAN_STATUS=$(probely scans get ${SCAN_ID} --api-key $PROBELY_API_KEY -o JSON | jq -r '.status')
                 if [ "$SCAN_STATUS" == "started" ] || [ "$SCAN_STATUS" == "queued" ]; then
                   echo "Scan is running or queued!"
                 else
@@ -51,7 +51,7 @@ pipelines:
               done
             
             # Optional logic - abort the pipeline if there are any HIGH risk vulnerabilities.
-            - HIGH_VULNS=$(probely scans get $SCAN_ID --api-key $PROBELY_API_KEY -o JSON | jq -r '.[0].highs')
+            - HIGH_VULNS=$(probely scans get $SCAN_ID --api-key $PROBELY_API_KEY -o JSON | jq -r '.highs')
             - echo "HIGH risk vulnerabilities ${HIGH_VULNS}"
             - |
               if [[ "$HIGH_VULNS" -gt 0 ]]; then
