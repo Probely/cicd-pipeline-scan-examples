@@ -52,4 +52,3 @@ scan:
       else
         echo "Scan doesn't have High risk vulnerabilities"
       fi
-
