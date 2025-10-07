@@ -62,4 +62,3 @@ pipelines:
               fi
           services:
             - docker
-

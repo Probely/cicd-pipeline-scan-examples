@@ -110,3 +110,4 @@ pipelines:
           - docker rm test-app
           - docker network rm custom-network
           - killall farcasterd-linux-amd64-0.4.3
+
